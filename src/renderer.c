@@ -71,39 +71,102 @@ static const char* vk_result_to_str(VkResult result) {
     }
 }
 
+struct VulkanExtension {
+    const char* name;
+    bool enable;
+    bool supported;
+};
 
-static void enable_extension_if_possible(VkExtensionProperties* extension, const char* wanted_extension, const char** enabled_extensions, u32* enabled_count) {
+static void enable_extension_if_possible(VkExtensionProperties* extension, const char* wanted_extension, char** enabled_extensions, u32* enabled_count) {
     if (strcmp(wanted_extension, extension->extensionName) == 0) {
         printf("enabling instance extension %s (v: %d)\n", extension->extensionName, extension->specVersion);
-        enabled_extensions[*enabled_count++] = extension->extensionName;
+        strcpy(enabled_extensions[*enabled_count++], extension->extensionName);
     }
 }
 
 const char** vk_required_instance_extensions(GraphicsConfiguration* config, u32* count) {
     const char* const* surface_exts = surface_vk_get_required_extensions(config->render_surface, count);
-    u32 surface_exts_count = *count;
 
-    const char** extensions = malloc(sizeof(const char*) * (*count + 1000));
-    *count = 0;
+    u32 extension_idx = 0;
+    static struct VulkanExtension extensions[256] = { 0 };
+
+    for (u32 i = 0; i < *count; ++i) {
+        extensions[extension_idx++] = (struct VulkanExtension) { surface_exts[i], true };
+    }
+
+    extensions[extension_idx++] = (struct VulkanExtension) { VK_EXT_DEBUG_UTILS_EXTENSION_NAME, true };
+
+    u32 enabled_idx = 0;
+    static const char* enabled_extensions[256] = { 0 };
 
     u32 avail;
     MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, NULL), "VkInstanceExtensionProperties phase #1");
 
-    VkExtensionProperties* props = malloc(sizeof(VkExtensionProperties) * avail);
-    MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, props), "VkInstanceExtensionProperties phase #2");
+    VkExtensionProperties* available_extensions = malloc(sizeof(VkExtensionProperties) * avail);
+    MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, available_extensions), "VkInstanceExtensionProperties phase #2");
 
     for (u32 i = 0; i < avail; ++i) {
-        printf("vulkan instance-level extension: %s\n", props[i].extensionName);
+        printf("vulkan instance-level extension: %s\n", available_extensions[i].extensionName);
 
-        enable_extension_if_possible(&props[i], VK_EXT_DEBUG_UTILS_EXTENSION_NAME, extensions, count);
-
-        for (u32 j = 0; j < surface_exts_count; ++j) {
-            enable_extension_if_possible(&props[i], surface_exts[j], extensions, count);
+        for (u32 j = 0; j < extension_idx; ++j) {
+            if (strcmp(extensions[j].name, available_extensions[i].extensionName) == 0) {
+                enabled_extensions[enabled_idx++] = extensions[j].name;
+            }
         }
     }
 
-    free(props);
-    return extensions;
+    free(available_extensions);
+    *count = enabled_idx;
+    return enabled_extensions;
+}
+
+static void vk_check_required_instance_layers(const char* wanted_layers[], u32* count) {
+#if defined(ZULK_DEBUG)
+    *count = 32;
+    VkLayerProperties layers[32];
+    VkResult res = vkEnumerateInstanceLayerProperties(count, layers);
+
+    // FIXME: handle incompletes
+    if (res == VK_INCOMPLETE) {
+        printf("incomplete\n");
+        *count = 0;
+        return;
+    }
+
+    u32 layers_available = *count;
+    *count = 0;
+
+    bool all_found = false;
+
+    for (u32 i = 0; i < layers_available; ++i) {
+        printf("vulkan instance-level layer: %s\n", layers[i].layerName);
+
+        if (strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+            printf("vulkan validation layers present in the system therefore enabling them.\n");
+            *count = 1;
+            return;
+        }
+    }
+
+    if (!all_found)
+        *count = 0;
+#else
+    *count = 0;
+#endif
+}
+
+static void vk_check_instance_layers_support(VkInstanceCreateInfo* create_info) {
+    static const char* enabled_layers[] = {
+        "VK_LAYER_KHRONOS_validation",
+    };
+
+    u32 count = 1;
+    vk_check_required_instance_layers(enabled_layers, &count);
+    printf("%d\n", count);
+    if (count == 1) {
+        create_info->enabledLayerCount = count;
+        create_info->ppEnabledLayerNames = enabled_layers;
+    }
 }
 
 static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* config) {
@@ -122,41 +185,27 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
     u32 extension_count = 0;
     const char** extensions = vk_required_instance_extensions(config, &extension_count);
 
-    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-
-    uint32_t count;
-    vkEnumerateInstanceLayerProperties(&count, NULL);
-
-    VkLayerProperties* props = calloc(sizeof(VkLayerProperties), count);
-    vkEnumerateInstanceLayerProperties(&count, props);
-
-    for (u32 i = 0; i < count; ++i) {
-        printf("layer %s\n", props[i].layerName);
-    }
-
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger = {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
-        .pfnUserCallback = NULL,
+        .pfnUserCallback = vk_debug_callback,
     };
 
     VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 
+        .pNext = &debug_messenger,
         .pApplicationInfo = &app_info,
 
         .enabledExtensionCount = extension_count,
         .ppEnabledExtensionNames = extensions,
-
-        .enabledLayerCount = 1,
-        .ppEnabledLayerNames = layers,
     };
+
+    vk_check_instance_layers_support(&create_info);
 
     MUST_SUCCEED_OR_CRASH(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
     volkLoadInstance(graphics->instance);
-
-    free(extensions);
 }
 
 static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfiguration* config) {
