@@ -2,6 +2,10 @@ if (UNIX)
     set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WAYLAND_KHR)
 endif()
 
+if (WIN32)
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
+endif()
+
 add_subdirectory(volk)
 
 set(SDL_STATIC ON)

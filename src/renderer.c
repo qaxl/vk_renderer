@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <vulkan/vulkan_core.h>
 
-#define MUST_SUCCEED_OR_CRASH(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31mCRITICAL ERROR: couldn't create %s: %d = %s; will crash!\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
+#define MUST_SUCCEED_OR_CRASH(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31m!!!CRITICAL ERROR!!! couldn't create %s: %d = %s; will crash !!!CRITICAL ERROR!!!\x1b[0m\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
 
 struct VulkanGraphics {
     VkInstance instance;
@@ -122,7 +122,7 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
     u32 extension_count = 0;
     const char** extensions = vk_required_instance_extensions(config, &extension_count);
 
-    const char* layers[] = { "VK_ERROR_LAYER_NOT_PRESENT" };
+    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
 
     uint32_t count;
     vkEnumerateInstanceLayerProperties(&count, NULL);

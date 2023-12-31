@@ -10,11 +10,22 @@
 
 #include <volk.h>
 
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+#include <gtk/gtk.h>
+void sdl_wayland_titlebar_workaround() {
+    gtk_init_check(NULL, NULL);
+}
+#else
+#define sdl_wayland_titlebar_workaround() do {} while(0)
+#endif
+
 struct Surface {
     SDL_Window* window;
 };
 
 Surface* surface_create(int width, int height, const char* title) {
+    sdl_wayland_titlebar_workaround();
+
     // TODO: error handling
     SDL_Init(SDL_INIT_EVERYTHING);
 
