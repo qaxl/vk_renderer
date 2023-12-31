@@ -1,5 +1,8 @@
 # Zulk Vulkan Renderer in C
 
+> [!WARNING]
+> This is just my own program, which is only for my educational purposes. This code shouldn't be used in production but feel free to read and use the code as you wish (within the license).
+
 This is just my testing project to prove my friend wrong. A Vulkan renderer written in plain C.
 
 ## Screenshots gallery
