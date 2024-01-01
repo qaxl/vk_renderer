@@ -79,7 +79,7 @@ struct VulkanExtension {
 
 static void enable_extension_if_possible(VkExtensionProperties* extension, const char* wanted_extension, char** enabled_extensions, u32* enabled_count) {
     if (strcmp(wanted_extension, extension->extensionName) == 0) {
-        printf("enabling instance extension %s (v: %d)\n", extension->extensionName, extension->specVersion);
+        // printf("enabling instance extension %s (v: %d)\n", extension->extensionName, extension->specVersion);
         strcpy(enabled_extensions[*enabled_count++], extension->extensionName);
     }
 }
@@ -106,7 +106,7 @@ const char** vk_required_instance_extensions(GraphicsConfiguration* config, u32*
     MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, available_extensions), "VkInstanceExtensionProperties phase #2");
 
     for (u32 i = 0; i < avail; ++i) {
-        printf("vulkan instance-level extension: %s\n", available_extensions[i].extensionName);
+        // printf("vulkan instance-level extension: %s\n", available_extensions[i].extensionName);
 
         for (u32 j = 0; j < extension_idx; ++j) {
             if (strcmp(extensions[j].name, available_extensions[i].extensionName) == 0) {
@@ -139,10 +139,10 @@ static void vk_check_required_instance_layers(const char* wanted_layers[], u32* 
     bool all_found = false;
 
     for (u32 i = 0; i < layers_available; ++i) {
-        printf("vulkan instance-level layer: %s\n", layers[i].layerName);
+        // printf("vulkan instance-level layer: %s\n", layers[i].layerName);
 
         if (strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
-            printf("vulkan validation layers present in the system therefore enabling them.\n");
+            // printf("vulkan validation layers present in the system therefore enabling them.\n");
             *count = 1;
             return;
         }
@@ -164,8 +164,8 @@ static void vk_check_instance_layers_support(VkInstanceCreateInfo* create_info) 
     vk_check_required_instance_layers(enabled_layers, &count);
     printf("%d\n", count);
     if (count == 1) {
-        create_info->enabledLayerCount = count;
-        create_info->ppEnabledLayerNames = enabled_layers;
+        // create_info->enabledLayerCount = count;
+        // create_info->ppEnabledLayerNames = enabled_layers;
     }
 }
 
@@ -237,7 +237,7 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
         VkPhysicalDeviceMemoryProperties memory_props;
         vkGetPhysicalDeviceMemoryProperties(devices[i], &memory_props);
 
-        printf("Found an GPU \"%s\"\n", props.deviceName);
+        // printf("Found an GPU \"%s\"\n", props.deviceName);
 
         ranks_of_devices[i] += props.limits.maxImageDimension3D;
 
@@ -245,12 +245,12 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
         for (u32 x = 0; x < memory_props.memoryHeapCount; ++x) {
             // ignore shared memory, for now, for simplicity?
             if (memory_props.memoryHeaps[x].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-                printf("\tmemory heap %d has flags: %d\n", x, memory_props.memoryHeaps[x].flags);
+                // printf("\tmemory heap %d has flags: %d\n", x, memory_props.memoryHeaps[x].flags);
                 ranks_of_devices[i] = vram += memory_props.memoryHeaps[x].size;
             }
         }
 
-        printf("\thas %d memory heaps in total of %lf GiB of VRAM\n", memory_props.memoryHeapCount, (double)vram / 1024 / 1024 / 1024);
+        // printf("\thas %d memory heaps in total of %lf GiB of VRAM\n", memory_props.memoryHeapCount, (double)vram / 1024 / 1024 / 1024);
     }
 
     u32 best_device = 0;
@@ -262,7 +262,7 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
         }
     }
 
-    printf("Selected GPU at index %d to be the rendering GPU.\n", best_device);
+    // printf("Selected GPU at index %d to be the rendering GPU.\n", best_device);
     graphics->gpu = devices[best_device];
 }
 
