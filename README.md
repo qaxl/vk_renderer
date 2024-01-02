@@ -23,17 +23,13 @@ See the GitHub [releases tab](https://github.com/qaxl/vk_renderer/releases). Bin
 
 | Platform     | Status |
 | ------------ | ------ |
-| Linux x86_64 | ✅     |
+| Linux        | ✅     |
 | Windows (x64)| ✅     |
-| Android      | 🚧¹    |
-| iOS          | ❌⁰    |
-| macOS        | ❌⁰    |
+| Android      | 🚧     |
+| iOS          | ❌     |
+| macOS        | ❌     |
 
-##### Legend
-
-0: support unplanned, but could be achieved with MoltenVK; i don't currently own apple devices so supporting them is kind of an issue.
-
-1: support planned, but unimplemented.
+Apple platforms can't be supported as I (`qaxl`) don't own any apple devices. Android support is underway.
 
 ## Dependencies
 
