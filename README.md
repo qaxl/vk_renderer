@@ -26,8 +26,8 @@ See the GitHub [releases tab](https://github.com/qaxl/vk_renderer/releases). Bin
 | Linux x86_64 | ✅     |
 | Windows (x64)| ✅     |
 | Android      | 🚧¹    |
-| iOS          | ❎⁰    |
-| macOS        | ❎⁰    |
+| iOS          | ❌⁰    |
+| macOS        | ❌⁰    |
 
 ##### Legend
 
