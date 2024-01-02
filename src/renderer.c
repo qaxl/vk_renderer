@@ -13,6 +13,8 @@
 
 struct VulkanGraphics {
     VkInstance instance;
+    /* TODO: move this into optional structure? */
+    VkDebugUtilsMessengerEXT debug_messenger;
 
     VkPhysicalDevice gpu;
     VkDevice device;
@@ -22,7 +24,7 @@ struct VulkanGraphics {
 extern VkSurfaceKHR surface_vk_create(Surface* surface, VkInstance instance);
 extern const char* const* surface_vk_get_required_extensions(Surface* surface, u32* count);
 
-static bool load_vulkan() {
+static inline bool load_vulkan() {
     static bool loaded = false;
 
     if (!loaded) {
@@ -43,7 +45,7 @@ static VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBits
     return VK_FALSE;
 }
 
-static const char* vk_result_to_str(VkResult result) {
+static inline const char* vk_result_to_str(VkResult result) {
     switch (result) {
         case VK_SUCCESS:
             return "Success";
@@ -63,18 +65,66 @@ static const char* vk_result_to_str(VkResult result) {
             return "Out of device memory";
         case VK_ERROR_INITIALIZATION_FAILED:
             return "Initialization failed";
+        case VK_ERROR_DEVICE_LOST:
+            return "Device lost";
+        case VK_ERROR_MEMORY_MAP_FAILED:
+            return "Memory map failed";
         case VK_ERROR_LAYER_NOT_PRESENT:
             return "Layer not present";
-        // Add more cases for other error codes as needed
+        case VK_ERROR_EXTENSION_NOT_PRESENT:
+            return "Extension not present";
+        case VK_ERROR_FEATURE_NOT_PRESENT:
+            return "Feature not present";
+        case VK_ERROR_INCOMPATIBLE_DRIVER:
+            return "Incompatible driver";
+        case VK_ERROR_TOO_MANY_OBJECTS:
+            return "Too many objects";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED:
+            return "Format not supported";
+        case VK_ERROR_FRAGMENTED_POOL:
+            return "Fragmented pool";
+        case VK_ERROR_UNKNOWN:
+            return "Unknown error";
+        case VK_ERROR_OUT_OF_POOL_MEMORY:
+            return "Out of pool memory";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE:
+            return "Invalid external handle";
+        case VK_ERROR_FRAGMENTATION:
+            return "Fragmentation";
+        case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS:
+            return "Invalid opaque capture address";
+        case VK_ERROR_SURFACE_LOST_KHR:
+            return "Surface lost";
+        case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
+            return "Native window in use";
+        case VK_SUBOPTIMAL_KHR:
+            return "Suboptimal";
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            return "Out of date";
+        case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR:
+            return "Incompatible display";
+        case VK_ERROR_VALIDATION_FAILED_EXT:
+            return "Validation failed";
+        case VK_ERROR_INVALID_SHADER_NV:
+            return "Invalid shader";
+        case VK_ERROR_INCOMPATIBLE_VERSION_KHR:
+            return "Incompatible version";
+        case VK_ERROR_NOT_PERMITTED_EXT:
+            return "Not permitted";
+        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+            return "Full screen exclusive mode lost";
+        case VK_THREAD_IDLE_KHR:
+            return "Thread idle";
+        case VK_THREAD_DONE_KHR:
+            return "Thread done";
+        case VK_OPERATION_DEFERRED_KHR:
+            return "Operation deferred";
+        case VK_OPERATION_NOT_DEFERRED_KHR:
+            return "Operation not deferred";
+        case VK_PIPELINE_COMPILE_REQUIRED_EXT:
+            return "Pipeline compile required";
         default:
             return "Unknown error code";
-    }
-}
-
-static void enable_extension_if_possible(VkExtensionProperties* extension, const char* wanted_extension, char** enabled_extensions, u32* enabled_count) {
-    if (strcmp(wanted_extension, extension->extensionName) == 0) {
-        // printf("enabling instance extension %s (v: %d)\n", extension->extensionName, extension->specVersion);
-        strcpy(enabled_extensions[*enabled_count++], extension->extensionName);
     }
 }
 
@@ -182,6 +232,15 @@ static void vk_check_instance_layers_support(VkInstanceCreateInfo* create_info) 
     }
 }
 
+static inline VkDebugUtilsMessengerCreateInfoEXT vk_init_debug_messenger_info() {
+    return (VkDebugUtilsMessengerCreateInfoEXT){
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,                                                                                             /*   vvv  intel doesn't have this extension? vvv */
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT /* | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT */,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+        .pfnUserCallback = vk_debug_callback,
+    };
+}
+
 static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* config) {
     VkApplicationInfo app_info = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -196,13 +255,7 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
     };
 
     CStrArr extensions = vk_required_instance_extensions(config);
-
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger = {
-        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,                                                                                             /*   vvv  intel doesn't have this extension? vvv */
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT /* | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT */,
-        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
-        .pfnUserCallback = vk_debug_callback,
-    };
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger = vk_init_debug_messenger_info();
 
     VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -218,6 +271,8 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
 
     ERR_CHECK(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
     volkLoadInstance(graphics->instance);
+
+    vkCreateDebugUtilsMessengerEXT(graphics->instance, &debug_messenger, nullptr, &graphics->debug_messenger);
 }
 
 static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfiguration* config) {
