@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <vulkan/vulkan_core.h>
 
-#define MUST_SUCCEED_OR_CRASH(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31m!!!CRITICAL ERROR!!! couldn't create %s: %d = %s; will crash !!!CRITICAL ERROR!!!\x1b[0m\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
+#define ERR_CHECK(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31m!!!CRITICAL ERROR!!! couldn't create %s: %d = %s; will crash !!!CRITICAL ERROR!!!\x1b[0m\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
 
 struct VulkanGraphics {
     VkInstance instance;
@@ -71,12 +71,6 @@ static const char* vk_result_to_str(VkResult result) {
     }
 }
 
-struct VulkanExtension {
-    const char* name;
-    bool enable;
-    bool supported;
-};
-
 static void enable_extension_if_possible(VkExtensionProperties* extension, const char* wanted_extension, char** enabled_extensions, u32* enabled_count) {
     if (strcmp(wanted_extension, extension->extensionName) == 0) {
         // printf("enabling instance extension %s (v: %d)\n", extension->extensionName, extension->specVersion);
@@ -84,39 +78,58 @@ static void enable_extension_if_possible(VkExtensionProperties* extension, const
     }
 }
 
-const char** vk_required_instance_extensions(GraphicsConfiguration* config, u32* count) {
-    const char* const* surface_exts = surface_vk_get_required_extensions(config->render_surface, count);
+/* this structure can only hold constant string *literals* */
+typedef struct DynamicallySizedStaticStringArray {
+    u32 size;
+    u32 capacity;
+    
+    const char* values[64];
+} DynamicallySizedStaticStringArray, CStrArr;
 
-    u32 extension_idx = 0;
-    static struct VulkanExtension extensions[256] = { 0 };
-
-    for (u32 i = 0; i < *count; ++i) {
-        extensions[extension_idx++] = (struct VulkanExtension) { surface_exts[i], true };
-    }
-
-    extensions[extension_idx++] = (struct VulkanExtension) { VK_EXT_DEBUG_UTILS_EXTENSION_NAME, true };
-
-    u32 enabled_idx = 0;
-    static const char* enabled_extensions[256] = { 0 };
+CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
+    u32 surface_exts_count;
+    const char* const* surface_exts = surface_vk_get_required_extensions(config->render_surface, &surface_exts_count);
 
     u32 avail;
-    MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, NULL), "VkInstanceExtensionProperties phase #1");
+    ERR_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &avail, NULL), "VkInstanceExtensionProperties phase #1");
 
     VkExtensionProperties* available_extensions = malloc(sizeof(VkExtensionProperties) * avail);
-    MUST_SUCCEED_OR_CRASH(vkEnumerateInstanceExtensionProperties(NULL, &avail, available_extensions), "VkInstanceExtensionProperties phase #2");
+    ERR_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &avail, available_extensions), "VkInstanceExtensionProperties phase #2");
+
+    CStrArr enabled_extensions;
+    enabled_extensions.capacity = 64;
+    enabled_extensions.size = 0;
+
+    const u32 required_exts = surface_exts_count;
+    u32 required_exts_found = 0;
 
     for (u32 i = 0; i < avail; ++i) {
-        // printf("vulkan instance-level extension: %s\n", available_extensions[i].extensionName);
+        if (strcmp(VK_EXT_DEBUG_UTILS_EXTENSION_NAME, available_extensions[i].extensionName) == 0) {
+            enabled_extensions.values[enabled_extensions.size++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        }
 
-        for (u32 j = 0; j < extension_idx; ++j) {
-            if (strcmp(extensions[j].name, available_extensions[i].extensionName) == 0) {
-                enabled_extensions[enabled_idx++] = extensions[j].name;
+        for (u32 j = 0; j < surface_exts_count; ++j) {
+            if (strcmp(surface_exts[i], available_extensions[i].extensionName) == 0) {
+                enabled_extensions.values[enabled_extensions.size++] = surface_exts[i];
+                required_exts_found++;
             }
         }
     }
 
+    if (required_exts_found != required_exts) {
+        fprintf(stderr, "all required extensions not available; required %d extensions, but got only %d. required extensions: ", required_exts_found, required_exts);
+        for (u32 i = 0; i < required_exts; ++i) {
+            if (i < surface_exts_count)
+                fprintf(stderr, "%s, ", surface_exts[i]);
+
+            /* here others... */
+        }
+
+        fprintf(stderr, "\n");
+        exit(EXIT_FAILURE);
+    }
+
     free(available_extensions);
-    *count = enabled_idx;
     return enabled_extensions;
 }
 
@@ -182,12 +195,11 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    u32 extension_count = 0;
-    const char** extensions = vk_required_instance_extensions(config, &extension_count);
+    CStrArr extensions = vk_required_instance_extensions(config);
 
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger = {
-        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,                                                                                             /*   vvv  intel doesn't have this extension? vvv */
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT /* | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT */,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
         .pfnUserCallback = vk_debug_callback,
     };
@@ -198,13 +210,13 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
         .pNext = &debug_messenger,
         .pApplicationInfo = &app_info,
 
-        .enabledExtensionCount = extension_count,
-        .ppEnabledExtensionNames = extensions,
+        .enabledExtensionCount = extensions.size,
+        .ppEnabledExtensionNames = extensions.values,
     };
 
     vk_check_instance_layers_support(&create_info);
 
-    MUST_SUCCEED_OR_CRASH(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
+    ERR_CHECK(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
     volkLoadInstance(graphics->instance);
 }
 
@@ -220,7 +232,7 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
         result = VK_SUCCESS;
     }
 
-    MUST_SUCCEED_OR_CRASH(result, "VkPhysicalDevice");
+    ERR_CHECK(result, "VkPhysicalDevice");
     printf("Using %s preference to select a GPU.\n", config->power_preference == GRAPHICS_HIGH_PERFORMANCE ? "high perf" : "low power");
 
     // TODO: vvv
@@ -271,7 +283,7 @@ static void vk_create_logical_dev(VulkanGraphics* graphics) {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
     };
 
-    MUST_SUCCEED_OR_CRASH(vkCreateDevice(graphics->gpu, &create_info, NULL, &graphics->device), "VkDevice");
+    ERR_CHECK(vkCreateDevice(graphics->gpu, &create_info, NULL, &graphics->device), "VkDevice");
     volkLoadDevice(graphics->device);
 }
 
