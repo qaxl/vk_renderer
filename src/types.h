@@ -28,10 +28,11 @@ u32 round_to_highest_pow_of_2(u32 value);
 #endif
 
 #if defined(_WIN32) || defined(_WIN64)
-#define ZULK_PLAT_WIN32 1
+#define ZULK_WIN32 1
 #elif defined(__linux__)
-#define ZULK_PLAT_LINUX 1
-#define ZULK_PLAT_UNIX 1
+#define ZULK_LINUX 1
 #else
 #error "This platform is currently unsupported by ZVK."
 #endif
+
+#define ZARRSIZ(x) sizeof(x) / sizeof(*x)

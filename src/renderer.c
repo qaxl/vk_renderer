@@ -11,14 +11,35 @@
 
 #define ERR_CHECK(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31m!!!CRITICAL ERROR!!! couldn't create %s: %d = %s; will crash !!!CRITICAL ERROR!!!\x1b[0m\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
 
+typedef struct QueueFamilies {
+    u32 graphics_family;
+    u32 present_family;
+
+    u32 found_families;
+} QueueFamilies;
+
 struct VulkanGraphics {
     VkInstance instance;
-    /* TODO: move this into optional structure? */
-    VkDebugUtilsMessengerEXT debug_messenger;
+
+    VkSurfaceKHR surface;
 
     VkPhysicalDevice gpu;
     VkDevice device;
+
+    VkQueue graphics_queue;
+    VkQueue present_queue;
+
+    /* TODO: don't store this here lol */
+    QueueFamilies families;
+
+#if defined(ZULK_DEBUG)
+    /* TODO: move this into optional structure? */
+    VkDebugUtilsMessengerEXT debug_messenger;
+#endif
 };
+
+#define QUEUE_IS_COMPLETE(x) (x.found_families & 0b1100)
+#define QUEUE_FOUND_SET(x, m, v, b) x.m = v; x.found_families |= b
 
 // Internal functions not defined here...
 extern VkSurfaceKHR surface_vk_create(Surface* surface, VkInstance instance);
@@ -107,8 +128,6 @@ static inline const char* vk_result_to_str(VkResult result) {
             return "Validation failed";
         case VK_ERROR_INVALID_SHADER_NV:
             return "Invalid shader";
-        case VK_ERROR_INCOMPATIBLE_VERSION_KHR:
-            return "Incompatible version";
         case VK_ERROR_NOT_PERMITTED_EXT:
             return "Not permitted";
         case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
@@ -129,12 +148,10 @@ static inline const char* vk_result_to_str(VkResult result) {
 }
 
 /* this structure can only hold constant string *literals* */
-typedef struct DynamicallySizedStaticStringArray {
+typedef struct CStrArr {
     u32 size;
-    u32 capacity;
-    
     const char* values[64];
-} DynamicallySizedStaticStringArray, CStrArr;
+} CStrArr;
 
 CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
     u32 surface_exts_count;
@@ -147,7 +164,7 @@ CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
     ERR_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &avail, available_extensions), "VkInstanceExtensionProperties phase #2");
 
     CStrArr enabled_extensions;
-    enabled_extensions.capacity = 64;
+    // enabled_extensions.capacity = 64;
     enabled_extensions.size = 0;
 
     const u32 required_exts = surface_exts_count;
@@ -159,8 +176,9 @@ CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
         }
 
         for (u32 j = 0; j < surface_exts_count; ++j) {
-            if (strcmp(surface_exts[i], available_extensions[i].extensionName) == 0) {
-                enabled_extensions.values[enabled_extensions.size++] = surface_exts[i];
+            if (strcmp(surface_exts[j], available_extensions[i].extensionName) == 0) {
+                /* safety: surface_exts is a static array pointer, so this SHOULD be safe in most cases. */
+                enabled_extensions.values[enabled_extensions.size++] = surface_exts[j];
                 required_exts_found++;
             }
         }
@@ -169,10 +187,11 @@ CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
     if (required_exts_found != required_exts) {
         fprintf(stderr, "all required extensions not available; required %d extensions, but got only %d. required extensions: ", required_exts_found, required_exts);
         for (u32 i = 0; i < required_exts; ++i) {
-            if (i < surface_exts_count)
+            if (i < surface_exts_count) {
                 fprintf(stderr, "%s, ", surface_exts[i]);
-
-            /* here others... */
+            } else {
+                /* here others... */
+            }
         }
 
         fprintf(stderr, "\n");
@@ -183,53 +202,33 @@ CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
     return enabled_extensions;
 }
 
-static void vk_check_required_instance_layers(const char* wanted_layers[], u32* count) {
+static int vk_check_required_instance_layers(VkInstanceCreateInfo* info) {
 #if defined(ZULK_DEBUG)
-    *count = 32;
-    VkLayerProperties layers[32];
-    VkResult res = vkEnumerateInstanceLayerProperties(count, layers);
+    u32 avail;
+    ERR_CHECK(vkEnumerateInstanceLayerProperties(&avail, NULL), "VkInstanceLayerProperties phase #1");
 
-    // FIXME: handle incompletes
-    if (res == VK_INCOMPLETE) {
-        printf("incomplete\n");
-        *count = 0;
-        return;
-    }
+    VkLayerProperties* available_layers = malloc(sizeof(VkLayerProperties) * avail);
+    ERR_CHECK(vkEnumerateInstanceLayerProperties(&avail, available_layers), "VkInstanceLayerProperties phase #2");
 
-    u32 layers_available = *count;
-    *count = 0;
+    int all_found = false;
 
-    bool all_found = false;
+    static const char* enabled_layers[] = {
+        "VK_LAYER_KHRONOS_validation"
+    };
 
-    for (u32 i = 0; i < layers_available; ++i) {
-        // printf("vulkan instance-level layer: %s\n", layers[i].layerName);
-
-        if (strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
-            // printf("vulkan validation layers present in the system therefore enabling them.\n");
-            *count = 1;
-            return;
+    /* TODO: if more layers wanted to be supported: change function entirely. */
+    for (u32 i = 0; i < avail; ++i) {
+        if (strcmp(available_layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+            info->enabledLayerCount = 1;
+            info->ppEnabledLayerNames = &enabled_layers[0];
+            return true;
         }
     }
 
-    if (!all_found)
-        *count = 0;
+    return false;
 #else
     *count = 0;
 #endif
-}
-
-static void vk_check_instance_layers_support(VkInstanceCreateInfo* create_info) {
-    static const char* enabled_layers[] = {
-        "VK_LAYER_KHRONOS_validation",
-    };
-
-    u32 count = 1;
-    vk_check_required_instance_layers(enabled_layers, &count);
-    printf("%d\n", count);
-    if (count == 1) {
-        // create_info->enabledLayerCount = count;
-        // create_info->ppEnabledLayerNames = enabled_layers;
-    }
 }
 
 static inline VkDebugUtilsMessengerCreateInfoEXT vk_init_debug_messenger_info() {
@@ -267,12 +266,19 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
         .ppEnabledExtensionNames = extensions.values,
     };
 
-    vk_check_instance_layers_support(&create_info);
+    vk_check_required_instance_layers(&create_info);
 
     ERR_CHECK(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
     volkLoadInstance(graphics->instance);
 
-    vkCreateDebugUtilsMessengerEXT(graphics->instance, &debug_messenger, nullptr, &graphics->debug_messenger);
+#if defined(ZULK_DEBUG)
+    if (vkCreateDebugUtilsMessengerEXT)
+        vkCreateDebugUtilsMessengerEXT(graphics->instance, &debug_messenger, NULL, &graphics->debug_messenger);
+#endif
+}
+
+static void vk_create_surface(VulkanGraphics* graphics, GraphicsConfiguration* config) {
+    graphics->surface = surface_vk_create(config->render_surface, graphics->instance);
 }
 
 static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfiguration* config) {
@@ -295,7 +301,7 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
     //     printf("This system only has one GPU, skipping the selection phase.\n");
     // }
 
-    uint32_t ranks_of_devices[MAX_ACCEPTED_PHYSICAL_DEVICE_COUNT] = { 0 };
+    uint64_t ranks_of_devices[MAX_ACCEPTED_PHYSICAL_DEVICE_COUNT] = { 0 };
 
     for (u32 i = 0; i < count; ++i) {
         VkPhysicalDeviceProperties props;
@@ -304,20 +310,27 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
         VkPhysicalDeviceMemoryProperties memory_props;
         vkGetPhysicalDeviceMemoryProperties(devices[i], &memory_props);
 
-        // printf("Found an GPU \"%s\"\n", props.deviceName);
+        VkPhysicalDeviceFeatures features;
+        vkGetPhysicalDeviceFeatures(devices[i], &features);
+
+        printf("Found an GPU \"%s\"\n", props.deviceName);
+
+        if (config->power_preference == GRAPHICS_HIGH_PERFORMANCE) {
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+                ranks_of_devices[i] += 10000000;
+        } else {
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+                ranks_of_devices[i] += 10000000;
+        }
 
         ranks_of_devices[i] += props.limits.maxImageDimension3D;
 
         u64 vram = 0;
         for (u32 x = 0; x < memory_props.memoryHeapCount; ++x) {
-            // ignore shared memory, for now, for simplicity?
             if (memory_props.memoryHeaps[x].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-                // printf("\tmemory heap %d has flags: %d\n", x, memory_props.memoryHeaps[x].flags);
                 ranks_of_devices[i] = vram += memory_props.memoryHeaps[x].size;
             }
         }
-
-        // printf("\thas %d memory heaps in total of %lf GiB of VRAM\n", memory_props.memoryHeapCount, (double)vram / 1024 / 1024 / 1024);
     }
 
     u32 best_device = 0;
@@ -331,15 +344,92 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
 
     // printf("Selected GPU at index %d to be the rendering GPU.\n", best_device);
     graphics->gpu = devices[best_device];
+
+    /* TODO: move to device selection, perhaps own function */
+    count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(graphics->gpu, &count, NULL);
+
+    VkQueueFamilyProperties* queue_families = malloc(sizeof(VkQueueFamilyProperties) * count);
+    vkGetPhysicalDeviceQueueFamilyProperties(graphics->gpu, &count, queue_families);
+
+
+    QueueFamilies families;
+    for (u32 i = 0; i < count; ++i) {
+        if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            QUEUE_FOUND_SET(families, graphics_family, i, 0b1000);
+        }
+
+        VkBool32 present_support = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(graphics->gpu, i, graphics->surface, &present_support);
+
+        if (present_support) {
+            QUEUE_FOUND_SET(families, present_family, i, 0b0100);
+        }
+
+        if (QUEUE_IS_COMPLETE(families)) {
+            break;
+        }
+    }
+
+    graphics->families = families;
+    free(queue_families);
 }
 
 static void vk_create_logical_dev(VulkanGraphics* graphics) {
+    VkPhysicalDeviceFeatures enabled_features = {};
+
+    /* TODO: check for extension support */
+    const char* extensions[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+
     VkDeviceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        
+        .pEnabledFeatures = &enabled_features,
+
+        .enabledExtensionCount = ZARRSIZ(extensions),
+        .ppEnabledExtensionNames = extensions,
     };
+
+    if (graphics->families.graphics_family == graphics->families.present_family) {
+        VkDeviceQueueCreateInfo queue_info = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueCount = 1,
+            .queueFamilyIndex = graphics->families.graphics_family,
+            /* i have no idea will this work... */
+            .pQueuePriorities = &(float){1.0f},
+        };
+
+        create_info.queueCreateInfoCount = 1;
+        create_info.pQueueCreateInfos = &queue_info;
+    } else {
+        VkDeviceQueueCreateInfo queue_infos[] = {
+            (VkDeviceQueueCreateInfo) {
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueCount = 1,
+                .queueFamilyIndex = graphics->families.graphics_family,
+                /* i have no idea will this work... */
+                .pQueuePriorities = &(float){1.0f},
+            },
+            (VkDeviceQueueCreateInfo) {
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueCount = 1,
+                .queueFamilyIndex = graphics->families.present_family,
+                /* i have no idea will this work... */
+                .pQueuePriorities = &(float){1.0f},
+            },
+        };
+
+        create_info.queueCreateInfoCount = 2;
+        create_info.pQueueCreateInfos = queue_infos;
+    }
 
     ERR_CHECK(vkCreateDevice(graphics->gpu, &create_info, NULL, &graphics->device), "VkDevice");
     volkLoadDevice(graphics->device);
+
+    vkGetDeviceQueue(graphics->device, graphics->families.graphics_family, 0, &graphics->graphics_queue);
+    vkGetDeviceQueue(graphics->device, graphics->families.present_family, 0, &graphics->present_queue);
 }
 
 
@@ -350,6 +440,7 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
 
     VulkanGraphics* graphics = malloc(sizeof(VulkanGraphics));
     vk_create_instance(graphics, config);
+    vk_create_surface(graphics, config);
     vk_select_physical_dev(graphics, config);
     vk_create_logical_dev(graphics);
 
@@ -358,6 +449,14 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
 
 void graphics_deinitialize(VulkanGraphics* graphics) {
     vkDestroyDevice(graphics->device, NULL);
+
+    vkDestroySurfaceKHR(graphics->instance, graphics->surface, NULL);
+
+#if defined(ZULK_DEBUG)
+    if (vkDestroyDebugUtilsMessengerEXT)
+        vkDestroyDebugUtilsMessengerEXT(graphics->instance, graphics->debug_messenger, NULL);
+#endif
+
     vkDestroyInstance(graphics->instance, NULL);
 
     free(graphics);
