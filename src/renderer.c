@@ -1,7 +1,6 @@
 #include "renderer.h"
 #include "surface.h"
 #include "io.h"
-#include "vulkan/vulkan_core.h"
 
 #include <volk.h>
 
