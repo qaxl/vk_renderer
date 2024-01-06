@@ -17,7 +17,7 @@ typedef signed __int128 s128;
 
 typedef size_t usize;
 
-typedef char buf;
+typedef char byte;
 
 u32 round_to_highest_pow_of_2(u32 value);
 
@@ -36,3 +36,4 @@ u32 round_to_highest_pow_of_2(u32 value);
 #endif
 
 #define ZARRSIZ(x) sizeof(x) / sizeof(*x)
+#define ZCLAMP(x, up, low) min(up, max(x, low))

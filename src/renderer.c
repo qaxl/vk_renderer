@@ -1,5 +1,7 @@
 #include "renderer.h"
 #include "surface.h"
+#include "io.h"
+#include "vulkan/vulkan_core.h"
 
 #include <volk.h>
 
@@ -7,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <vulkan/vulkan_core.h>
 
 #define ERR_CHECK(x, m) do { VkResult r = x; if  (r != VK_SUCCESS) { fprintf(stderr, "\x1b[31m!!!CRITICAL ERROR!!! couldn't create %s: %d = %s; will crash !!!CRITICAL ERROR!!!\x1b[0m\n", m, r, vk_result_to_str(r)); exit(EXIT_FAILURE); } } while(0);
 
@@ -17,6 +18,22 @@ typedef struct QueueFamilies {
 
     u32 found_families;
 } QueueFamilies;
+
+/* this structure can only hold constant string *literals* */
+typedef struct CStrArr {
+    u32 size;
+    const char* values[64];
+} CStrArr;
+
+typedef struct SurfaceDetails {
+    VkSurfaceCapabilitiesKHR caps;
+
+    u32 formats_count;
+    VkSurfaceFormatKHR* formats;
+
+    u32 modes_count;
+    VkPresentModeKHR* modes;
+} SurfaceDetails;
 
 struct VulkanGraphics {
     VkInstance instance;
@@ -28,6 +45,19 @@ struct VulkanGraphics {
 
     VkQueue graphics_queue;
     VkQueue present_queue;
+
+    VkSwapchainKHR swapchain;
+    VkExtent2D swapchain_extent;
+    VkSurfaceFormatKHR swapchain_format;
+
+    /* TODO: this could be stored in "stack" (this object is heap allocated anyway) */
+    u32 swapchain_images_count;
+    VkImage* swapchain_images;
+
+    u32 swapchain_views_count;
+    VkImageView* swapchain_views;
+
+    VkPipelineLayout pipeline_layout;
 
     /* TODO: don't store this here lol */
     QueueFamilies families;
@@ -62,7 +92,11 @@ static inline bool load_vulkan() {
 }
 
 static VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageTypes, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
-    fprintf(stderr, "vulkan validation: %s\n", pCallbackData->pMessage);
+    /* IGNORED: status message about validation layer enablement. */
+    if (pCallbackData->messageIdNumber == -2016116905)
+        return VK_FALSE;
+
+    fprintf(stderr, "\x1b[33mVulkan validation layers: %s\n\x1b[0m", pCallbackData->pMessage);
     return VK_FALSE;
 }
 
@@ -147,12 +181,6 @@ static inline const char* vk_result_to_str(VkResult result) {
     }
 }
 
-/* this structure can only hold constant string *literals* */
-typedef struct CStrArr {
-    u32 size;
-    const char* values[64];
-} CStrArr;
-
 CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
     u32 surface_exts_count;
     const char* const* surface_exts = surface_vk_get_required_extensions(config->render_surface, &surface_exts_count);
@@ -210,8 +238,6 @@ static int vk_check_required_instance_layers(VkInstanceCreateInfo* info) {
     VkLayerProperties* available_layers = malloc(sizeof(VkLayerProperties) * avail);
     ERR_CHECK(vkEnumerateInstanceLayerProperties(&avail, available_layers), "VkInstanceLayerProperties phase #2");
 
-    int all_found = false;
-
     static const char* enabled_layers[] = {
         "VK_LAYER_KHRONOS_validation"
     };
@@ -221,20 +247,22 @@ static int vk_check_required_instance_layers(VkInstanceCreateInfo* info) {
         if (strcmp(available_layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
             info->enabledLayerCount = 1;
             info->ppEnabledLayerNames = &enabled_layers[0];
+            free(available_layers);
             return true;
         }
     }
 
+    free(available_layers);
     return false;
 #else
-    *count = 0;
+    return false;
 #endif
 }
 
 static inline VkDebugUtilsMessengerCreateInfoEXT vk_init_debug_messenger_info() {
     return (VkDebugUtilsMessengerCreateInfoEXT){
-        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,                                                                                             /*   vvv  intel doesn't have this extension? vvv */
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT /* | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT */,
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
         .pfnUserCallback = vk_debug_callback,
     };
@@ -266,14 +294,19 @@ static void vk_create_instance(VulkanGraphics* graphics, GraphicsConfiguration* 
         .ppEnabledExtensionNames = extensions.values,
     };
 
-    vk_check_required_instance_layers(&create_info);
+    int res = vk_check_required_instance_layers(&create_info);
 
     ERR_CHECK(vkCreateInstance(&create_info, NULL, &graphics->instance), "VkInstance");
     volkLoadInstance(graphics->instance);
 
 #if defined(ZULK_DEBUG)
-    if (vkCreateDebugUtilsMessengerEXT)
+    if (res && vkCreateDebugUtilsMessengerEXT) {
+        printf("\x1b[31menabling layers!\n\x1b[0m");
+        debug_messenger = vk_init_debug_messenger_info();
         vkCreateDebugUtilsMessengerEXT(graphics->instance, &debug_messenger, NULL, &graphics->debug_messenger);
+    } else {
+        graphics->debug_messenger = NULL;
+    }
 #endif
 }
 
@@ -375,7 +408,42 @@ static void vk_select_physical_dev(VulkanGraphics* graphics, GraphicsConfigurati
     free(queue_families);
 }
 
-static void vk_create_logical_dev(VulkanGraphics* graphics) {
+/* TODO: these functions do not need to take in the full details */
+static VkSurfaceFormatKHR vk_select_best_surface_format(SurfaceDetails* details) {
+    for (u32 i = 0; i < details->formats_count; ++i) {
+        if (details->formats[i].format == VK_FORMAT_R8G8B8A8_SRGB && details->formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            return details->formats[i];
+    }
+
+    return details->formats[0];
+}
+
+/* TODO: allow setting in engine settings */
+static VkPresentModeKHR vk_select_best_present_mode(SurfaceDetails* details) {
+    for (u32 i = 0; i < details->modes_count; ++i) {
+        if (details->modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            return details->modes[i];
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+static VkExtent2D vk_select_best_swapchain_extent(GraphicsConfiguration* config, SurfaceDetails* details) {
+    if (details->caps.currentExtent.width != UINT32_MAX)
+        return details->caps.currentExtent;
+
+    int width, height;
+    surface_get_size(config->render_surface, &width, &height);
+
+    VkExtent2D extent;
+
+    extent.width = ZCLAMP(width, details->caps.minImageExtent.width, details->caps.maxImageExtent.width);
+    extent.width = ZCLAMP(height, details->caps.minImageExtent.height, details->caps.maxImageExtent.height);
+
+    return extent;
+}
+
+static void vk_create_logical_dev(VulkanGraphics* graphics, GraphicsConfiguration* config) {
     VkPhysicalDeviceFeatures enabled_features = {};
 
     /* TODO: check for extension support */
@@ -410,14 +478,14 @@ static void vk_create_logical_dev(VulkanGraphics* graphics) {
                 .queueCount = 1,
                 .queueFamilyIndex = graphics->families.graphics_family,
                 /* i have no idea will this work... */
-                .pQueuePriorities = &(float){1.0f},
+                .pQueuePriorities = (float[]){1.0f},
             },
             (VkDeviceQueueCreateInfo) {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 .queueCount = 1,
                 .queueFamilyIndex = graphics->families.present_family,
                 /* i have no idea will this work... */
-                .pQueuePriorities = &(float){1.0f},
+                .pQueuePriorities = (float[]){1.0f, 1.0f},
             },
         };
 
@@ -430,8 +498,214 @@ static void vk_create_logical_dev(VulkanGraphics* graphics) {
 
     vkGetDeviceQueue(graphics->device, graphics->families.graphics_family, 0, &graphics->graphics_queue);
     vkGetDeviceQueue(graphics->device, graphics->families.present_family, 0, &graphics->present_queue);
+
+    /* TODO: verify does device have these... */
+    SurfaceDetails details = {};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(graphics->gpu, graphics->surface, &details.caps);
+
+    vkGetPhysicalDeviceSurfaceFormatsKHR(graphics->gpu, graphics->surface, &details.formats_count, NULL);
+    details.formats = malloc(sizeof(*details.formats) * details.formats_count);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(graphics->gpu, graphics->surface, &details.formats_count, details.formats);
+
+
+    vkGetPhysicalDeviceSurfacePresentModesKHR(graphics->gpu, graphics->surface, &details.modes_count, NULL);
+    details.modes = malloc(sizeof(*details.modes) * details.modes_count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(graphics->gpu, graphics->surface, &details.modes_count, details.modes);
+
+    VkSurfaceFormatKHR format = vk_select_best_surface_format(&details);
+    VkPresentModeKHR mode = vk_select_best_present_mode(&details);
+    VkExtent2D extent = vk_select_best_swapchain_extent(config, &details);
+
+    u32 image_count = details.caps.minImageCount + 1;
+    if (details.caps.maxImageCount > 0 && image_count > details.caps.maxImageCount)
+        image_count = details.caps.maxImageCount;
+
+    int exclusive = graphics->families.graphics_family == graphics->families.present_family;
+    u32 queue_families[] = { graphics->families.graphics_family, graphics->families.present_family };
+
+    VkSwapchainCreateInfoKHR swapchain_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        
+        .surface = graphics->surface,
+        .minImageCount = image_count,
+        
+        .imageFormat = format.format,
+        .imageColorSpace = format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        
+        .imageSharingMode = exclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+        .queueFamilyIndexCount = exclusive ? 0 : 2,
+        .pQueueFamilyIndices = exclusive ? NULL : queue_families,
+
+        .preTransform = details.caps.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = mode,
+        .clipped = VK_TRUE,
+
+        .oldSwapchain = VK_NULL_HANDLE,
+    };
+
+    ERR_CHECK(vkCreateSwapchainKHR(graphics->device, &swapchain_info, NULL, &graphics->swapchain), "couldn't create swapchain");
+
+    free(details.formats);
+    free(details.modes);
+
+    vkGetSwapchainImagesKHR(graphics->device, graphics->swapchain, &graphics->swapchain_images_count, NULL);
+    graphics->swapchain_images = malloc(sizeof(VkImage) * graphics->swapchain_images_count);
+    vkGetSwapchainImagesKHR(graphics->device, graphics->swapchain, &graphics->swapchain_images_count, graphics->swapchain_images);
+
+    graphics->swapchain_extent = extent;
+    graphics->swapchain_format = format;
+
+    graphics->swapchain_views_count = graphics->swapchain_images_count;
+    graphics->swapchain_views = malloc(sizeof(VkImageView) * graphics->swapchain_views_count);
+
+    for (u32 i = 0; i < graphics->swapchain_views_count; ++i) {
+        VkImageViewCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+
+            .image = graphics->swapchain_images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+
+            .format = graphics->swapchain_format.format,
+            .components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, },
+
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.baseMipLevel = 0,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.baseArrayLayer = 0,
+            .subresourceRange.layerCount = 1,
+        };
+
+        ERR_CHECK(vkCreateImageView(graphics->device, &info, NULL, &graphics->swapchain_views[i]), "image view creation");
+    }
 }
 
+static VkShaderModule vk_create_shader_module(VulkanGraphics* graphics, FileView* view) {
+    VkShaderModuleCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = view->length,
+        .pCode = (const u32*)view->data,
+    };
+
+    VkShaderModule module;
+    ERR_CHECK(vkCreateShaderModule(graphics->device, &info, NULL, &module), "shader module creation");
+
+    return module;
+}
+
+static void vk_create_graphics_pipeline(VulkanGraphics* graphics) {
+    FileView vertex = file_view_open("shaders/bin/vulkan_triangle_pos.vert.spv");
+    FileView fragment = file_view_open("shaders/bin/vulkan_triangle_pos.frag.spv");
+
+    if (vertex.data == NULL || fragment.data == NULL) {
+        fprintf(stderr, "couldn't load shaders!");
+        exit(EXIT_FAILURE);
+    }
+
+    VkShaderModule vertex_mod = vk_create_shader_module(graphics, &vertex);
+    VkShaderModule fragment_mod = vk_create_shader_module(graphics, &fragment);
+
+    file_view_close(&vertex);
+    file_view_close(&fragment);
+
+    VkPipelineShaderStageCreateInfo vert_shader_stage = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = vertex_mod,
+        .pName = "main"
+    };
+
+    VkPipelineShaderStageCreateInfo frag_shader_stage = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = fragment_mod,
+        .pName = "main"
+    };
+
+    VkPipelineShaderStageCreateInfo stages[] = { vert_shader_stage, frag_shader_stage };
+
+    VkDynamicState dynamic_states[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = ZARRSIZ(dynamic_states),
+        .pDynamicStates = dynamic_states,
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    // VkViewport viewport = {
+    //     .x = 0,
+    //     .y = 0,
+
+    //     .width = (float)graphics->swapchain_extent.width,
+    //     .height = (float)graphics->swapchain_extent.height,
+
+    //     .minDepth = 0,
+    //     .maxDepth = 1,
+    // };
+
+    // VkRect2D scissor = {
+    //     .extent = graphics->swapchain_extent,
+    // };
+
+    VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisample = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE,
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+    };
+
+    VkPipelineLayoutCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    };
+
+    ERR_CHECK(vkCreatePipelineLayout(graphics->device, &info, NULL, &graphics->pipeline_layout), "pipeline layout creation");
+
+    vkDestroyShaderModule(graphics->device, vertex_mod, NULL);
+    vkDestroyShaderModule(graphics->device, fragment_mod, NULL);
+}
 
 VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     if (!load_vulkan()) {
@@ -442,18 +716,29 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     vk_create_instance(graphics, config);
     vk_create_surface(graphics, config);
     vk_select_physical_dev(graphics, config);
-    vk_create_logical_dev(graphics);
+    vk_create_logical_dev(graphics, config);
+    vk_create_graphics_pipeline(graphics);
 
     return graphics;
 }
 
 void graphics_deinitialize(VulkanGraphics* graphics) {
+    vkDestroyPipelineLayout(graphics->device, graphics->pipeline_layout, NULL);
+
+    for (u32 i = 0; i < graphics->swapchain_views_count; ++i) {
+        vkDestroyImageView(graphics->device, graphics->swapchain_views[i], NULL);
+    }
+
+    free(graphics->swapchain_views);
+    free(graphics->swapchain_images);
+
+    vkDestroySwapchainKHR(graphics->device, graphics->swapchain, NULL);
     vkDestroyDevice(graphics->device, NULL);
 
     vkDestroySurfaceKHR(graphics->instance, graphics->surface, NULL);
 
 #if defined(ZULK_DEBUG)
-    if (vkDestroyDebugUtilsMessengerEXT)
+    if (graphics->debug_messenger && vkDestroyDebugUtilsMessengerEXT)
         vkDestroyDebugUtilsMessengerEXT(graphics->instance, graphics->debug_messenger, NULL);
 #endif
 

@@ -55,6 +55,11 @@ const char* surface_get_title(Surface* surface) {
     return SDL_GetWindowTitle(surface->window);
 }
 
+void surface_get_size(Surface* surface, int* width, int* height) {
+    *width = surface->width;
+    *height = surface->height;
+}
+
 void surface_poll_events(Surface* surface) {
     while (SDL_PollEvent(&surface->event)) {
         switch (surface->event.type) {
@@ -67,6 +72,10 @@ void surface_poll_events(Surface* surface) {
                 surface->width = surface->event.window.data1;
                 surface->height = surface->event.window.data2;
                 CALL_LISTENERS(surface->on_resize_callbacks, surface->width, surface->height);
+                break;
+
+            case SDL_EVENT_WINDOW_MINIMIZED:
+            case SDL_EVENT_WINDOW_RESTORED:
                 break;
         }
     }

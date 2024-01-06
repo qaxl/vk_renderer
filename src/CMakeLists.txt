@@ -1,5 +1,5 @@
 add_executable(renderer
-    main.c renderer.c types.c surface.c)
+    io.c main.c renderer.c types.c surface.c)
 
 if (SDL_WAYLAND)
     find_package(PkgConfig REQUIRED)
