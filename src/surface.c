@@ -1,6 +1,7 @@
 #include "surface.h"
 #include "SDL_events.h"
 #include "SDL_init.h"
+#include "SDL_video.h"
 #include "types.h"
 
 #include <SDL3/SDL.h>
@@ -30,6 +31,8 @@ struct Surface {
     int width, height;
 
     SurfaceResizeFunc on_resize_callbacks[32];
+
+    void* data;
 };
 
 Surface* surface_create(int width, int height, const char* title) {
@@ -41,7 +44,8 @@ Surface* surface_create(int width, int height, const char* title) {
     Surface* surface = malloc(sizeof(Surface));
     memset(surface, 0, sizeof(Surface));
 
-    surface->window = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN);
+    surface->window = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    surface->data = NULL;
 
     return surface;
 }
@@ -60,25 +64,33 @@ void surface_get_size(Surface* surface, int* width, int* height) {
     *height = surface->height;
 }
 
-void surface_poll_events(Surface* surface) {
-    while (SDL_PollEvent(&surface->event)) {
-        switch (surface->event.type) {
-            case SDL_EVENT_QUIT:
-            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                surface->has_received_close = true;
-                break;
+static inline void surface_event_handler(Surface* surface) {
+    switch (surface->event.type) {
+        case SDL_EVENT_QUIT:
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+            surface->has_received_close = true;
+            break;
 
-            case SDL_EVENT_WINDOW_RESIZED:
-                surface->width = surface->event.window.data1;
-                surface->height = surface->event.window.data2;
-                CALL_LISTENERS(surface->on_resize_callbacks, surface->width, surface->height);
-                break;
+        case SDL_EVENT_WINDOW_RESIZED:
+            surface->width = surface->event.window.data1;
+            surface->height = surface->event.window.data2;
+            CALL_LISTENERS(surface->on_resize_callbacks, surface, surface->width, surface->height);
+            break;
 
-            case SDL_EVENT_WINDOW_MINIMIZED:
-            case SDL_EVENT_WINDOW_RESTORED:
-                break;
-        }
+        case SDL_EVENT_WINDOW_MINIMIZED:
+        case SDL_EVENT_WINDOW_RESTORED:
+            break;
     }
+}
+
+void surface_poll_events(Surface* surface) {
+    while (SDL_PollEvent(&surface->event))
+        surface_event_handler(surface);
+}
+
+void surface_wait_event(Surface* surface) {
+    SDL_WaitEvent(&surface->event);
+    surface_event_handler(surface);
 }
 
 /* used internally by renderer.c */
@@ -107,4 +119,12 @@ void surface_on_resize(Surface* surface, SurfaceResizeFunc function) {
 
 int surface_should_close(Surface* surface) {
     return surface->has_received_close;
+}
+
+void surface_set_data(Surface* surface, void* data) {
+    surface->data = data;
+}
+
+void* surface_get_data(Surface* surface) {
+    return surface->data;
 }

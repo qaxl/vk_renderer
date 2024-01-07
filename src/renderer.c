@@ -52,7 +52,6 @@ struct VulkanGraphics {
     /* TODO: this could be stored in "stack" (this object is heap allocated anyway) */
     u32 swapchain_images_count;
     u32 swapchain_views_count;
-    u32 swapchain_framebuffers_count;
 
     VkImage* swapchain_images;
     VkImageView* swapchain_views;
@@ -69,7 +68,13 @@ struct VulkanGraphics {
     VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
     VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
 
+    /* SPACE OPTIMIZATION... */
+    u32 swapchain_framebuffers_count;
     u32 current_frame;
+
+    Surface* render_surface;
+
+    bool frame_resized_recently;
 
     /* TODO: don't store this here lol */
     QueueFamilies families;
@@ -440,9 +445,6 @@ static VkSurfaceFormatKHR vk_select_best_surface_format(SurfaceDetails* details)
 /* TODO: allow setting in engine settings */
 static VkPresentModeKHR vk_select_best_present_mode(SurfaceDetails* details) {
     for (u32 i = 0; i < details->modes_count; ++i) {
-        if (details->modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
-            return details->modes[i];
-
         if (details->modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
             return details->modes[i];
     }
@@ -450,12 +452,12 @@ static VkPresentModeKHR vk_select_best_present_mode(SurfaceDetails* details) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-static VkExtent2D vk_select_best_swapchain_extent(GraphicsConfiguration* config, SurfaceDetails* details) {
+static VkExtent2D vk_select_best_swapchain_extent(Surface* render_surface, SurfaceDetails* details) {
     if (details->caps.currentExtent.width != UINT32_MAX)
         return details->caps.currentExtent;
 
     int width, height;
-    surface_get_size(config->render_surface, &width, &height);
+    surface_get_size(render_surface, &width, &height);
 
     VkExtent2D extent;
 
@@ -522,7 +524,7 @@ static void vk_create_logical_dev(VulkanGraphics* graphics, GraphicsConfiguratio
     vkGetDeviceQueue(graphics->device, graphics->families.present_family, 0, &graphics->present_queue);
 }
 
-static void vk_create_swapchain(VulkanGraphics* graphics, GraphicsConfiguration* config) {
+static void vk_create_swapchain(VulkanGraphics* graphics) {
     /* TODO: verify does device have these... */
     SurfaceDetails details = {};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(graphics->gpu, graphics->surface, &details.caps);
@@ -538,7 +540,7 @@ static void vk_create_swapchain(VulkanGraphics* graphics, GraphicsConfiguration*
 
     VkSurfaceFormatKHR format = vk_select_best_surface_format(&details);
     VkPresentModeKHR mode = vk_select_best_present_mode(&details);
-    VkExtent2D extent = vk_select_best_swapchain_extent(config, &details);
+    VkExtent2D extent = vk_select_best_swapchain_extent(graphics->render_surface, &details);
 
     u32 image_count = details.caps.minImageCount + 1;
     if (details.caps.maxImageCount > 0 && image_count > details.caps.maxImageCount)
@@ -858,6 +860,38 @@ static void vk_create_sync_objects(VulkanGraphics* graphics) {
     }
 }
 
+static void vk_cleanup_swapchain(VulkanGraphics* graphics) {
+    for (u32 i = 0; i < graphics->swapchain_framebuffers_count; ++i) {
+        vkDestroyFramebuffer(graphics->device, graphics->swapchain_framebuffers[i], NULL);
+    }
+
+    for (u32 i = 0; i < graphics->swapchain_views_count; ++i) {
+        vkDestroyImageView(graphics->device, graphics->swapchain_views[i], NULL);
+    }
+
+    free(graphics->swapchain_views);
+    free(graphics->swapchain_images);
+
+    vkDestroySwapchainKHR(graphics->device, graphics->swapchain, NULL);
+}
+
+static void vk_recreate_swapchain(VulkanGraphics* graphics) {
+    int width = 0, height = 0;
+    while (width == 0 || height == 0) {
+        surface_get_size(graphics->render_surface, &width, &height);
+        surface_wait_event(graphics->render_surface);
+    }
+
+    vkDeviceWaitIdle(graphics->device);
+
+    vk_cleanup_swapchain(graphics);
+
+    vk_create_swapchain(graphics);
+    vk_create_image_views(graphics);
+    vk_create_framebuffers(graphics);
+}
+
+
 static void vk_record_command_buffer(VulkanGraphics* graphics, VkCommandBuffer command_buffer, u32 image_index) {
     VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     ERR_CHECK(vkBeginCommandBuffer(command_buffer, &begin), "failed to (begin) record command buffer");
@@ -896,6 +930,11 @@ static void vk_record_command_buffer(VulkanGraphics* graphics, VkCommandBuffer c
     ERR_CHECK(vkEndCommandBuffer(command_buffer), "failed to (end) record command buffer");
 }
 
+static void vk_surface_on_resize(Surface* surface, int width, int height) {
+    Graphics* graphics = surface_get_data(surface);
+    graphics->frame_resized_recently = true;
+}
+
 VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     if (!load_vulkan()) {
         return NULL;
@@ -903,13 +942,14 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
 
     VulkanGraphics* graphics = malloc(sizeof(VulkanGraphics));
     graphics->current_frame = 0;
+    graphics->render_surface = config->render_surface;
 
     vk_create_instance(graphics, config);
     vk_create_surface(graphics, config);
     vk_select_physical_dev(graphics, config);
     vk_create_logical_dev(graphics, config);
 
-    vk_create_swapchain(graphics, config);
+    vk_create_swapchain(graphics);
     vk_create_image_views(graphics);
     vk_create_render_pass(graphics);
 
@@ -918,6 +958,9 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     vk_create_command_pool(graphics);
     vk_create_command_buffers(graphics);
     vk_create_sync_objects(graphics);
+
+    surface_set_data(graphics->render_surface, graphics);
+    surface_on_resize(graphics->render_surface, vk_surface_on_resize);
 
     return graphics;
 }
@@ -933,24 +976,13 @@ void graphics_deinitialize(Graphics* graphics) {
 
     vkDestroyCommandPool(graphics->device, graphics->command_pool, NULL);
 
-    for (u32 i = 0; i < graphics->swapchain_framebuffers_count; ++i) {
-        vkDestroyFramebuffer(graphics->device, graphics->swapchain_framebuffers[i], NULL);
-    }
-
     vkDestroyPipeline(graphics->device, graphics->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(graphics->device, graphics->pipeline_layout, NULL);
     vkDestroyRenderPass(graphics->device, graphics->render_pass, NULL);
 
-    for (u32 i = 0; i < graphics->swapchain_views_count; ++i) {
-        vkDestroyImageView(graphics->device, graphics->swapchain_views[i], NULL);
-    }
-
-    free(graphics->swapchain_views);
-    free(graphics->swapchain_images);
-
-    vkDestroySwapchainKHR(graphics->device, graphics->swapchain, NULL);
+    vk_cleanup_swapchain(graphics);
+    
     vkDestroyDevice(graphics->device, NULL);
-
     vkDestroySurfaceKHR(graphics->instance, graphics->surface, NULL);
 
 #if defined(ZULK_DEBUG)
@@ -965,11 +997,18 @@ void graphics_deinitialize(Graphics* graphics) {
 
 void graphics_draw_frame(Graphics* graphics) {
     vkWaitForFences(graphics->device, 1, &graphics->in_flight_fences[graphics->current_frame], VK_TRUE, UINT64_MAX);
-    vkResetFences(graphics->device, 1, &graphics->in_flight_fences[graphics->current_frame]);
 
     u32 img_index;
-    vkAcquireNextImageKHR(graphics->device, graphics->swapchain, UINT64_MAX, graphics->image_available_semaphores[graphics->current_frame], VK_NULL_HANDLE, &img_index);
+    VkResult res = vkAcquireNextImageKHR(graphics->device, graphics->swapchain, UINT64_MAX, graphics->image_available_semaphores[graphics->current_frame], VK_NULL_HANDLE, &img_index);
 
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        vk_recreate_swapchain(graphics);
+        return;
+    } else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        ERR_CHECK(res, "swapchain acquirement failure");
+    }
+
+    vkResetFences(graphics->device, 1, &graphics->in_flight_fences[graphics->current_frame]);
     vkResetCommandBuffer(graphics->command_buffers[graphics->current_frame], 0);
     vk_record_command_buffer(graphics, graphics->command_buffers[graphics->current_frame], img_index);
 
@@ -996,7 +1035,14 @@ void graphics_draw_frame(Graphics* graphics) {
         .pImageIndices = &img_index,
     };
 
-    vkQueuePresentKHR(graphics->present_queue, &present);
+    res = vkQueuePresentKHR(graphics->present_queue, &present);
+
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || graphics->frame_resized_recently) {
+        graphics->frame_resized_recently = false;
+        vk_recreate_swapchain(graphics);
+    } else if (res != VK_SUCCESS) {
+        ERR_CHECK(res, "swapchain presentation failure");
+    }
 
     graphics->current_frame += 1;
     graphics->current_frame %= MAX_FRAMES_IN_FLIGHT;
