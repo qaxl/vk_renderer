@@ -24,12 +24,9 @@ int main() {
 
     printf("took %ldms to initialzie vulkan\n", end - start);
 
-    while (1) {
-        SDL_Event event;
-        SDL_PollEvent(&event);
-
-        if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
-            break;
+    while (!surface_should_close(surface)) {
+        graphics_draw_frame(graphics);
+        surface_poll_events(surface);
     }
 
     graphics_deinitialize(graphics);

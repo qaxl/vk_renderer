@@ -34,6 +34,9 @@ typedef struct GraphicsConfiguration {
 
 #define MAX_ACCEPTED_PHYSICAL_DEVICE_COUNT (u32)32
 #define MAX_INSTANCE_EXTENSIONS_LOADED (u32)4096
+#define MAX_FRAMES_IN_FLIGHT (u32)2
 
 Graphics* graphics_initialize(GraphicsConfiguration* config);
 void graphics_deinitialize(Graphics* graphics);
+
+void graphics_draw_frame(Graphics* graphics);

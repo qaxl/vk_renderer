@@ -51,12 +51,25 @@ struct VulkanGraphics {
 
     /* TODO: this could be stored in "stack" (this object is heap allocated anyway) */
     u32 swapchain_images_count;
-    VkImage* swapchain_images;
-
     u32 swapchain_views_count;
-    VkImageView* swapchain_views;
+    u32 swapchain_framebuffers_count;
 
+    VkImage* swapchain_images;
+    VkImageView* swapchain_views;
+    VkFramebuffer* swapchain_framebuffers;
+
+    VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
+    VkPipeline graphics_pipeline;
+
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffers[MAX_FRAMES_IN_FLIGHT];
+
+    VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
+
+    u32 current_frame;
 
     /* TODO: don't store this here lol */
     QueueFamilies families;
@@ -94,6 +107,9 @@ static VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBits
     /* IGNORED: status message about validation layer enablement. */
     if (pCallbackData->messageIdNumber == -2016116905)
         return VK_FALSE;
+
+    if (pCallbackData->messageIdNumber == 0xa470b504)
+        __debugbreak();
 
     fprintf(stderr, "\x1b[33mVulkan validation layers: %s\n\x1b[0m", pCallbackData->pMessage);
     return VK_FALSE;
@@ -202,6 +218,10 @@ CStrArr vk_required_instance_extensions(GraphicsConfiguration* config) {
             enabled_extensions.values[enabled_extensions.size++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         }
 
+        // if (strcmp(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, available_extensions[i].extensionName) == 0) {
+        //     enabled_extensions.values[enabled_extensions.size++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+        // }
+
         for (u32 j = 0; j < surface_exts_count; ++j) {
             if (strcmp(surface_exts[j], available_extensions[i].extensionName) == 0) {
                 /* safety: surface_exts is a static array pointer, so this SHOULD be safe in most cases. */
@@ -262,7 +282,7 @@ static inline VkDebugUtilsMessengerCreateInfoEXT vk_init_debug_messenger_info() 
     return (VkDebugUtilsMessengerCreateInfoEXT){
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
-        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
         .pfnUserCallback = vk_debug_callback,
     };
 }
@@ -420,6 +440,9 @@ static VkSurfaceFormatKHR vk_select_best_surface_format(SurfaceDetails* details)
 /* TODO: allow setting in engine settings */
 static VkPresentModeKHR vk_select_best_present_mode(SurfaceDetails* details) {
     for (u32 i = 0; i < details->modes_count; ++i) {
+        if (details->modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            return details->modes[i];
+
         if (details->modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
             return details->modes[i];
     }
@@ -497,7 +520,9 @@ static void vk_create_logical_dev(VulkanGraphics* graphics, GraphicsConfiguratio
 
     vkGetDeviceQueue(graphics->device, graphics->families.graphics_family, 0, &graphics->graphics_queue);
     vkGetDeviceQueue(graphics->device, graphics->families.present_family, 0, &graphics->present_queue);
+}
 
+static void vk_create_swapchain(VulkanGraphics* graphics, GraphicsConfiguration* config) {
     /* TODO: verify does device have these... */
     SurfaceDetails details = {};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(graphics->gpu, graphics->surface, &details.caps);
@@ -557,7 +582,9 @@ static void vk_create_logical_dev(VulkanGraphics* graphics, GraphicsConfiguratio
 
     graphics->swapchain_extent = extent;
     graphics->swapchain_format = format;
+}
 
+static void vk_create_image_views(VulkanGraphics* graphics) {
     graphics->swapchain_views_count = graphics->swapchain_images_count;
     graphics->swapchain_views = malloc(sizeof(VkImageView) * graphics->swapchain_views_count);
 
@@ -580,6 +607,56 @@ static void vk_create_logical_dev(VulkanGraphics* graphics, GraphicsConfiguratio
 
         ERR_CHECK(vkCreateImageView(graphics->device, &info, NULL, &graphics->swapchain_views[i]), "image view creation");
     }
+}
+
+static void vk_create_render_pass(VulkanGraphics* graphics) {
+    VkAttachmentDescription color_attachment = {
+        .format = graphics->swapchain_format.format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    VkAttachmentReference color_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref,
+    };
+
+    VkSubpassDependency dep = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
+    VkRenderPassCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dep,
+    };
+
+    ERR_CHECK(vkCreateRenderPass(graphics->device, &info, NULL, &graphics->render_pass), "render pass");
 }
 
 static VkShaderModule vk_create_shader_module(VulkanGraphics* graphics, FileView* view) {
@@ -696,14 +773,127 @@ static void vk_create_graphics_pipeline(VulkanGraphics* graphics) {
         .pAttachments = &color_blend_attachment,
     };
 
-    VkPipelineLayoutCreateInfo info = {
+    VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     };
 
-    ERR_CHECK(vkCreatePipelineLayout(graphics->device, &info, NULL, &graphics->pipeline_layout), "pipeline layout creation");
+    ERR_CHECK(vkCreatePipelineLayout(graphics->device, &layout_info, NULL, &graphics->pipeline_layout), "pipeline layout creation");
+
+    VkGraphicsPipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = ZARRSIZ(stages),
+        .pStages = stages,
+
+        .pVertexInputState = &vertex_input,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisample,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_state,
+
+        .layout = graphics->pipeline_layout,
+        .renderPass = graphics->render_pass,
+        .subpass = 0,
+    };
+
+    ERR_CHECK(vkCreateGraphicsPipelines(graphics->device, VK_NULL_HANDLE, 1, &info, NULL, &graphics->graphics_pipeline), "graphics pipeline");
 
     vkDestroyShaderModule(graphics->device, vertex_mod, NULL);
     vkDestroyShaderModule(graphics->device, fragment_mod, NULL);
+}
+
+static void vk_create_framebuffers(VulkanGraphics* graphics) {
+    graphics->swapchain_framebuffers_count = graphics->swapchain_images_count;
+    graphics->swapchain_framebuffers = malloc(sizeof(VkFramebuffer) * graphics->swapchain_framebuffers_count);
+
+    for (u32 i = 0; i < graphics->swapchain_framebuffers_count; ++i) {
+        VkImageView attachments[] = {
+            graphics->swapchain_views[i],
+        };
+
+        VkFramebufferCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = graphics->render_pass,
+            .attachmentCount = 1,
+            .pAttachments = attachments,
+            .width = graphics->swapchain_extent.width,
+            .height = graphics->swapchain_extent.height,
+            .layers = 1,
+        };
+
+        ERR_CHECK(vkCreateFramebuffer(graphics->device, &info, NULL, &graphics->swapchain_framebuffers[i]), "framebuffer creation");
+    }
+}
+
+static void vk_create_command_pool(VulkanGraphics* graphics) {
+    VkCommandPoolCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = graphics->families.graphics_family,
+    };
+
+    ERR_CHECK(vkCreateCommandPool(graphics->device, &info, NULL, &graphics->command_pool), "command pool");
+}
+
+static void vk_create_command_buffers(VulkanGraphics* graphics) {
+    VkCommandBufferAllocateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = graphics->command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = ZARRSIZ(graphics->command_buffers),
+    };
+
+    ERR_CHECK(vkAllocateCommandBuffers(graphics->device, &info, graphics->command_buffers), "command buffer");
+}
+
+static void vk_create_sync_objects(VulkanGraphics* graphics) {
+    VkSemaphoreCreateInfo sem_info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkFenceCreateInfo fence_info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT };
+
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        ERR_CHECK(vkCreateSemaphore(graphics->device, &sem_info, NULL, &graphics->image_available_semaphores[i]), "img sem");
+        ERR_CHECK(vkCreateSemaphore(graphics->device, &sem_info, NULL, &graphics->render_finished_semaphores[i]), "rfinish sem");
+        ERR_CHECK(vkCreateFence(graphics->device, &fence_info, NULL, &graphics->in_flight_fences[i]), "infly fence");
+    }
+}
+
+static void vk_record_command_buffer(VulkanGraphics* graphics, VkCommandBuffer command_buffer, u32 image_index) {
+    VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    ERR_CHECK(vkBeginCommandBuffer(command_buffer, &begin), "failed to (begin) record command buffer");
+
+    VkRenderPassBeginInfo render_pass = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = graphics->render_pass,
+        .framebuffer = graphics->swapchain_framebuffers[image_index],
+
+        .renderArea.offset = { 0, 0 },
+        .renderArea.extent = graphics->swapchain_extent,
+
+        .clearValueCount = 1,
+        .pClearValues = (VkClearValue[]){ { { { 0, 0, 0, 1 } } } }
+    };
+
+    vkCmdBeginRenderPass(command_buffer, &render_pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics->graphics_pipeline);
+
+    VkViewport viewport = {
+        .width = (float)graphics->swapchain_extent.width,
+        .height = (float)graphics->swapchain_extent.height,
+        .minDepth = 0,
+        .maxDepth = 1,
+    };
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {
+        .extent = graphics->swapchain_extent
+    };
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(command_buffer);
+    ERR_CHECK(vkEndCommandBuffer(command_buffer), "failed to (end) record command buffer");
 }
 
 VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
@@ -712,17 +902,44 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     }
 
     VulkanGraphics* graphics = malloc(sizeof(VulkanGraphics));
+    graphics->current_frame = 0;
+
     vk_create_instance(graphics, config);
     vk_create_surface(graphics, config);
     vk_select_physical_dev(graphics, config);
     vk_create_logical_dev(graphics, config);
+
+    vk_create_swapchain(graphics, config);
+    vk_create_image_views(graphics);
+    vk_create_render_pass(graphics);
+
     vk_create_graphics_pipeline(graphics);
+    vk_create_framebuffers(graphics);
+    vk_create_command_pool(graphics);
+    vk_create_command_buffers(graphics);
+    vk_create_sync_objects(graphics);
 
     return graphics;
 }
 
-void graphics_deinitialize(VulkanGraphics* graphics) {
+void graphics_deinitialize(Graphics* graphics) {
+    vkDeviceWaitIdle(graphics->device);
+
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        vkDestroySemaphore(graphics->device, graphics->image_available_semaphores[i], NULL);
+        vkDestroySemaphore(graphics->device, graphics->render_finished_semaphores[i], NULL);
+        vkDestroyFence(graphics->device, graphics->in_flight_fences[i], NULL);
+    }
+
+    vkDestroyCommandPool(graphics->device, graphics->command_pool, NULL);
+
+    for (u32 i = 0; i < graphics->swapchain_framebuffers_count; ++i) {
+        vkDestroyFramebuffer(graphics->device, graphics->swapchain_framebuffers[i], NULL);
+    }
+
+    vkDestroyPipeline(graphics->device, graphics->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(graphics->device, graphics->pipeline_layout, NULL);
+    vkDestroyRenderPass(graphics->device, graphics->render_pass, NULL);
 
     for (u32 i = 0; i < graphics->swapchain_views_count; ++i) {
         vkDestroyImageView(graphics->device, graphics->swapchain_views[i], NULL);
@@ -744,4 +961,43 @@ void graphics_deinitialize(VulkanGraphics* graphics) {
     vkDestroyInstance(graphics->instance, NULL);
 
     free(graphics);
+}
+
+void graphics_draw_frame(Graphics* graphics) {
+    vkWaitForFences(graphics->device, 1, &graphics->in_flight_fences[graphics->current_frame], VK_TRUE, UINT64_MAX);
+    vkResetFences(graphics->device, 1, &graphics->in_flight_fences[graphics->current_frame]);
+
+    u32 img_index;
+    vkAcquireNextImageKHR(graphics->device, graphics->swapchain, UINT64_MAX, graphics->image_available_semaphores[graphics->current_frame], VK_NULL_HANDLE, &img_index);
+
+    vkResetCommandBuffer(graphics->command_buffers[graphics->current_frame], 0);
+    vk_record_command_buffer(graphics, graphics->command_buffers[graphics->current_frame], img_index);
+
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = (VkSemaphore[]){ graphics->image_available_semaphores[graphics->current_frame] },
+        .pWaitDstStageMask = (VkPipelineStageFlags[]){ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+        .commandBufferCount = 1,
+        .pCommandBuffers = &graphics->command_buffers[graphics->current_frame],
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = (VkSemaphore[]){ graphics->render_finished_semaphores[graphics->current_frame] },
+    };
+
+    ERR_CHECK(vkQueueSubmit(graphics->graphics_queue, 1, &submit, graphics->in_flight_fences[graphics->current_frame]), "subm draw cmd buf");
+
+    VkPresentInfoKHR present = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = (VkSemaphore[]){ graphics->render_finished_semaphores[graphics->current_frame] },
+
+        .swapchainCount = 1,
+        .pSwapchains = (VkSwapchainKHR[]){ graphics->swapchain },
+        .pImageIndices = &img_index,
+    };
+
+    vkQueuePresentKHR(graphics->present_queue, &present);
+
+    graphics->current_frame += 1;
+    graphics->current_frame %= MAX_FRAMES_IN_FLIGHT;
 }

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "types.h"
-#include <stdbool.h>
 
 /* data is NULL, if it failed to map. */
 typedef struct FileView {

@@ -30,6 +30,8 @@ FileView file_view_open(const char* path) {
 
     internal->file = file;
     internal->view = file_mapping;
+
+    return view;
 }
 
 void file_view_close(FileView* view) {
@@ -38,6 +40,8 @@ void file_view_close(FileView* view) {
     UnmapViewOfFile(view->data);
     CloseHandle(internal->view);
     CloseHandle(internal->file);
+
+    VirtualFree(internal, 0, MEM_RELEASE);
 }
 #else 
 #include <sys/stat.h>
