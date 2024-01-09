@@ -878,7 +878,9 @@ static void vk_cleanup_swapchain(VulkanGraphics* graphics) {
 static void vk_recreate_swapchain(VulkanGraphics* graphics) {
     int width = 0, height = 0;
     surface_get_size(graphics->render_surface, &width, &height);
+    
     while (width == 0 || height == 0) {
+        surface_get_size(graphics->render_surface, &width, &height);
         surface_wait_event(graphics->render_surface);
     }
 
