@@ -22,7 +22,7 @@ int main() {
     });
     clock_t end = clock() / (CLOCKS_PER_SEC / 1000);
 
-    printf("took %ldms to initialzie vulkan\n", end - start);
+    printf("took %ldms to init\n", end - start);
 
     while (!surface_should_close(surface)) {
         graphics_draw_frame(graphics);
