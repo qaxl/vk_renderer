@@ -287,7 +287,7 @@ static inline VkDebugUtilsMessengerCreateInfoEXT vk_init_debug_messenger_info() 
     return (VkDebugUtilsMessengerCreateInfoEXT){
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
-        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
         .pfnUserCallback = vk_debug_callback,
     };
 }
@@ -877,8 +877,8 @@ static void vk_cleanup_swapchain(VulkanGraphics* graphics) {
 
 static void vk_recreate_swapchain(VulkanGraphics* graphics) {
     int width = 0, height = 0;
+    surface_get_size(graphics->render_surface, &width, &height);
     while (width == 0 || height == 0) {
-        surface_get_size(graphics->render_surface, &width, &height);
         surface_wait_event(graphics->render_surface);
     }
 
@@ -943,6 +943,7 @@ VulkanGraphics* graphics_initialize(GraphicsConfiguration* config) {
     VulkanGraphics* graphics = malloc(sizeof(VulkanGraphics));
     graphics->current_frame = 0;
     graphics->render_surface = config->render_surface;
+    graphics->frame_resized_recently = false;
 
     vk_create_instance(graphics, config);
     vk_create_surface(graphics, config);
